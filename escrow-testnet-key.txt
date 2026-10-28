@@ -1,0 +1,4 @@
+Testnet escrow wallet for Cartel (testnet only, never reuse on mainnet)
+
+ESCROW_ACCOUNT_ID=3c0f78af01f974b11a7f10a35deb00f3343f88e6dcc03391253c14f40f74eb5b
+ESCROW_PRIVATE_KEY=ed25519:5nTafLPdzAfKsc2TZeH6nS7oXfDh1ENRx4NgpqD1PvFhzxW2mUikrVtBX2PpDughdLDg4tGu6y2pQRi84E3T4hWJ
