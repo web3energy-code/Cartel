@@ -5,6 +5,16 @@ import type { Conversation, Message, Profile } from './api'
 import { Avatar } from './ui'
 import { useWallet } from './wallet'
 
+// WhatsApp-style ticks: one grey tick = sent, two blue ticks = read.
+function Ticks({ read }: { read: boolean }) {
+  return (
+    <svg className={'c-ticks' + (read ? ' read' : '')} width="18" height="11" viewBox="0 0 18 11" fill="none" aria-label={read ? 'Read' : 'Sent'} role="img">
+      <path d="M1 5.8 4.2 9 10.5 1.6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+      {read && <path d="M7 8.6 8 9.4 14.5 1.6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />}
+    </svg>
+  )
+}
+
 function when(iso: string) {
   const date = new Date(iso)
   const today = new Date()
@@ -109,7 +119,8 @@ export default function Inbox({
               <div className="c-linebody">
                 <b>{nameOf(thread.profile, thread.with)}</b>
                 <span className="c-sub">
-                  {thread.last.from === accountId ? 'You: ' : ''}
+                  {thread.last.from === accountId && <Ticks read={!!thread.last.readAt} />}
+                  {thread.last.from === accountId ? ' ' : ''}
                   {thread.last.body}
                 </span>
               </div>
@@ -224,7 +235,10 @@ function Chat({
         {messages.map((message) => (
           <div key={message.id} className={'c-bubble' + (message.from === me ? ' me' : '')}>
             {message.body}
-            <small>{when(message.createdAt)}</small>
+            <small>
+              {when(message.createdAt)}
+              {message.from === me && <Ticks read={!!message.readAt} />}
+            </small>
           </div>
         ))}
       </div>
