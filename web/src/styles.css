@@ -156,3 +156,10 @@ a { color: var(--signal-ink); }
 .c-chat-form .c-btn { padding: 12px 18px; }
 .c-avatar-edit { display: flex; align-items: center; gap: 14px; }
 .c-bottom { grid-template-columns: repeat(5, 1fr); }
+
+.c-bubble small { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.c-ticks { color: #5d665f; flex: 0 0 auto; vertical-align: -1px; }
+.c-ticks.read { color: #1d8cff; }
+.c-bubble.me .c-ticks { color: #3b5a49; }
+.c-bubble.me .c-ticks.read { color: #0a6fdc; }
+.c-thread .c-ticks { margin-right: 2px; }
