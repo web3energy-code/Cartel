@@ -75,6 +75,29 @@ function errorMessage(error: unknown, fallback: string) {
 // Shapes sent to the browser
 // ---------------------------------------------------------------------------
 
+// The buyer's delivery details, checked and trimmed. Returns an error message for the buyer, or the clean object.
+function cleanDelivery(raw: any): { error: string } | { delivery: Record<string, string> } {
+  const text = (value: unknown, max: number) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max)
+
+  const delivery = {
+    name: text(raw?.name, 80),
+    phone: text(raw?.phone, 24),
+    address: text(raw?.address, 200),
+    city: text(raw?.city, 60),
+    state: text(raw?.state, 60),
+    country: text(raw?.country, 60),
+    notes: text(raw?.notes, 200),
+  }
+
+  if (delivery.name.length < 2) return { error: 'Enter the name of the person receiving the order.' }
+  if (!/^\+?[0-9 ()-]{6,24}$/.test(delivery.phone)) return { error: 'Enter a phone number the seller can reach.' }
+  if (delivery.address.length < 5) return { error: 'Enter your delivery address.' }
+  if (delivery.city.length < 2) return { error: 'Enter your city.' }
+  if (delivery.country.length < 2) return { error: 'Enter your country.' }
+
+  return { delivery }
+}
+
 function publicProduct(row: any) {
   return {
     id: row.id,
@@ -85,6 +108,7 @@ function publicProduct(row: any) {
     condition: row.condition,
     priceNear: formatNear(row.price_yocto),
     priceYocto: row.price_yocto,
+    deliveryFeeNear: formatNear(row.delivery_fee_yocto ?? '0'),
     quantity: row.quantity,
     location: row.location,
     images: row.image_urls ?? [],
@@ -115,6 +139,7 @@ function publicOrder(row: any) {
     sellerPayoutTx: row.seller_payout_tx ?? null,
     refundTx: row.refund_tx ?? null,
     disputeReason: row.dispute_reason ?? null,
+    delivery: row.delivery ?? null,
     createdAt: row.created_at,
     items: (row.items ?? []).map((item: any) => ({
       productId: item.product_id,
@@ -228,6 +253,13 @@ app.post('/products', upload.array('images', MAX_IMAGES), async (req: Request, r
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 10_000) return fail(res, 400, 'Quantity must be a whole number of at least 1.')
     if (files.length < 1) return fail(res, 400, 'Add at least one photo.')
 
+    // Delivery is already included in the price. The fee is stored only so the page can show it.
+    const feeText = String(body.deliveryFee ?? '').trim()
+    const deliveryFee = feeText === '' ? 0n : parseNear(feeText)
+
+    if (deliveryFee === null) return fail(res, 400, 'Enter the delivery fee as a number of NEAR, or leave it empty.')
+    if (deliveryFee > price) return fail(res, 400, 'The delivery fee cannot be more than the full price.')
+
     const urls: string[] = []
 
     for (const file of files) {
@@ -258,6 +290,7 @@ app.post('/products', upload.array('images', MAX_IMAGES), async (req: Request, r
         condition,
         location,
         price_yocto: price.toString(),
+        delivery_fee_yocto: deliveryFee.toString(),
         quantity,
         image_urls: urls,
         status: 'published',
@@ -308,6 +341,10 @@ app.post('/orders/checkout', async (req: Request, res: Response) => {
     const lines = req.body?.items
 
     if (!isAccountId(buyer)) return fail(res, 400, 'Connect your NEAR wallet first.')
+
+    const checked = cleanDelivery(req.body?.delivery)
+
+    if ('error' in checked) return fail(res, 400, checked.error)
 
     if (!Array.isArray(lines) || lines.length === 0 || lines.length > MAX_CART_LINES) {
       return fail(res, 400, 'Your cart is empty or too large.')
@@ -369,6 +406,7 @@ app.post('/orders/checkout', async (req: Request, res: Response) => {
           seller_account: seller,
           escrow_account: process.env.ESCROW_ACCOUNT_ID,
           total_yocto: total.toString(),
+          delivery: checked.delivery,
           fee_bps: FEE_BPS,
           status: 'awaiting_payment',
           network: NEAR_NETWORK,
