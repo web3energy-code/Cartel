@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, Home, MessageCircle, Minus, Package, Plus, ShieldCheck, ShoppingBag, Store, Tag, User } from 'lucide-react'
+import { ArrowLeft, Home, MessageCircle, Minus, Package, Plus, ShieldCheck, ShoppingBag, SlidersHorizontal, Store, Tag, User } from 'lucide-react'
 import { api, nameOf, near, shortAccount } from './api'
 import type { Config, Product, Profile as ProfileData } from './api'
 import { useWallet } from './wallet'
@@ -9,6 +9,7 @@ import Inbox from './Inbox'
 import ProfilePage from './Profile'
 import Seller from './Seller'
 import { Avatar } from './ui'
+import { AlertsPanel, Bell, useAlerts } from './Notifications'
 
 type Page = 'market' | 'product' | 'sell' | 'cart' | 'seller' | 'inbox' | 'me'
 
@@ -43,6 +44,12 @@ export default function App() {
   const [chatProduct, setChatProduct] = useState('')
   const [unread, setUnread] = useState(0)
   const [cameFrom, setCameFrom] = useState<Page>('market')
+  const [sort, setSort] = useState('new')
+  const [minPrice, setMinPrice] = useState('')
+  const [maxPrice, setMaxPrice] = useState('')
+  const [condition, setCondition] = useState('Any')
+  const [showFilters, setShowFilters] = useState(false)
+  const [showAlerts, setShowAlerts] = useState(false)
 
   useEffect(() => {
     try {
@@ -69,6 +76,8 @@ export default function App() {
     setNotice(message)
     window.setTimeout(() => setNotice(''), 3200)
   }, [])
+
+  const { alerts, unread: unreadAlerts, markAllRead } = useAlerts(accountId, flash)
 
   const loadProducts = useCallback(async () => {
     try {
@@ -133,9 +142,22 @@ export default function App() {
         product.sellerAccount.includes(query) ||
         product.location.toLowerCase().includes(query)
 
-      return matchesCategory && matchesSearch
+      const price = Number(product.priceNear)
+      const matchesPrice = (!minPrice || price >= Number(minPrice)) && (!maxPrice || price <= Number(maxPrice))
+      const matchesCondition = condition === 'Any' || product.condition === condition
+
+      return matchesCategory && matchesSearch && matchesPrice && matchesCondition
     })
-  }, [products, search, category])
+    .sort((a, b) =>
+      sort === 'low'
+        ? Number(a.priceNear) - Number(b.priceNear)
+        : sort === 'high'
+          ? Number(b.priceNear) - Number(a.priceNear)
+          : new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    )
+  }, [products, search, category, sort, minPrice, maxPrice, condition])
+
+  const activeFilters = (sort !== 'new' ? 1 : 0) + (minPrice || maxPrice ? 1 : 0) + (condition !== 'Any' ? 1 : 0)
 
   const selected = products.find((product) => product.id === selectedId) ?? null
   const cartCount = Object.values(cart).reduce((sum, quantity) => sum + quantity, 0)
@@ -234,6 +256,8 @@ export default function App() {
           ))}
         </nav>
 
+        {accountId && <Bell unread={unreadAlerts} onClick={() => { setShowAlerts(true); markAllRead() }} />}
+
         {accountId ? (
           <button className="c-wallet on" onClick={() => void disconnect()} title="Tap to disconnect">
             {shortAccount(accountId)}
@@ -260,6 +284,58 @@ export default function App() {
               value={search}
               onChange={(event) => setSearch(event.target.value)}
             />
+
+            <div className="c-filterbar">
+              <button className={'c-btn ghost small' + (showFilters ? ' on' : '')} onClick={() => setShowFilters((value) => !value)}>
+                <SlidersHorizontal size={15} /> Filters{activeFilters ? ` (${activeFilters})` : ''}
+              </button>
+              <span className="c-sub">
+                {visible.length} {visible.length === 1 ? 'item' : 'items'}
+              </span>
+              {activeFilters > 0 && (
+                <button
+                  className="c-link"
+                  onClick={() => {
+                    setSort('new')
+                    setMinPrice('')
+                    setMaxPrice('')
+                    setCondition('Any')
+                  }}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+
+            {showFilters && (
+              <div className="c-box c-filters">
+                <div className="c-field">
+                  <label htmlFor="sort">Sort by</label>
+                  <select id="sort" value={sort} onChange={(event) => setSort(event.target.value)}>
+                    <option value="new">Newest</option>
+                    <option value="low">Price: low to high</option>
+                    <option value="high">Price: high to low</option>
+                  </select>
+                </div>
+                <div className="c-two">
+                  <div className="c-field">
+                    <label htmlFor="min">Min price (NEAR)</label>
+                    <input id="min" inputMode="decimal" value={minPrice} onChange={(event) => setMinPrice(event.target.value.replace(/[^0-9.]/g, ''))} placeholder="0" />
+                  </div>
+                  <div className="c-field">
+                    <label htmlFor="max">Max price (NEAR)</label>
+                    <input id="max" inputMode="decimal" value={maxPrice} onChange={(event) => setMaxPrice(event.target.value.replace(/[^0-9.]/g, ''))} placeholder="Any" />
+                  </div>
+                </div>
+                <div className="c-chips" style={{ margin: 0 }}>
+                  {['Any', 'New', 'Like new', 'Used'].map((name) => (
+                    <button key={name} className={'c-chip' + (condition === name ? ' on' : '')} onClick={() => setCondition(name)}>
+                      {name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="c-chips">
               {categories.map((name) => (
@@ -437,6 +513,17 @@ export default function App() {
         ))}
       </nav>
 
+      {showAlerts && (
+        <AlertsPanel
+          alerts={alerts}
+          onClose={() => setShowAlerts(false)}
+          onOpenOrders={() => {
+            setShowAlerts(false)
+            open('cart')
+          }}
+        />
+      )}
+
       {notice && <div className="c-toast">{notice}</div>}
     </>
   )
@@ -504,6 +591,7 @@ function ProductView({
             <span className="c-tag">{product.condition}</span>
             {product.location && <span className="c-tag">{product.location}</span>}
             <span className="c-tag">{product.quantity} in stock</span>
+            <span className="c-tag">{Number(product.deliveryFeeNear) > 0 ? `Includes ${near(product.deliveryFeeNear)} delivery` : 'Delivery arranged with seller'}</span>
           </div>
 
           <p className="c-desc">{product.description}</p>
