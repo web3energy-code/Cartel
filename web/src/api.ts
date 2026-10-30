@@ -16,6 +16,7 @@ export interface Product {
   condition: string
   priceNear: string
   priceYocto: string
+  deliveryFeeNear: string
   quantity: number
   location: string
   images: string[]
@@ -28,6 +29,16 @@ export interface OrderItem {
   image: string | null
   unitPriceNear: string
   quantity: number
+}
+
+export interface Delivery {
+  name: string
+  phone: string
+  address: string
+  city: string
+  state: string
+  country: string
+  notes: string
 }
 
 export interface Order {
@@ -49,6 +60,7 @@ export interface Order {
   sellerPayoutTx: string | null
   refundTx: string | null
   disputeReason: string | null
+  delivery: Delivery | null
   createdAt: string
   items: OrderItem[]
 }
