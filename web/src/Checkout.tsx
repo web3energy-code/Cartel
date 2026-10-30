@@ -1,13 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ExternalLink, Minus, Package, Plus, ShieldCheck, Trash2 } from 'lucide-react'
 import { api, explorerTx, near, post, shortAccount } from './api'
-import type { Config, Order, Product } from './api'
-import { StarPicker, Stars } from './ui'
+import type { Config, Delivery, Order, Product } from './api'
+import Dashboard from './Dashboard'
+import { StarPicker, Stars, Timeline } from './ui'
 import { useWallet } from './wallet'
 
 type Tab = 'cart' | 'orders' | 'sales'
 
 const PENDING_KEY = 'cartel-pending-order'
+const DELIVERY_KEY = 'cartel-delivery'
+
+const EMPTY_DELIVERY: Delivery = { name: '', phone: '', address: '', city: '', state: '', country: '', notes: '' }
+
+function savedDelivery(): Delivery {
+  try {
+    return { ...EMPTY_DELIVERY, ...JSON.parse(localStorage.getItem(DELIVERY_KEY) || '{}') }
+  } catch {
+    return EMPTY_DELIVERY
+  }
+}
 
 const LABELS: Record<string, string> = {
   awaiting_payment: 'Awaiting payment',
@@ -88,6 +100,7 @@ export default function Checkout({
   const [tab, setTab] = useState<Tab>('cart')
   const [orders, setOrders] = useState<Order[]>([])
   const [sales, setSales] = useState<Order[]>([])
+  const [delivery, setDelivery] = useState<Delivery>(savedDelivery)
   const [reviewed, setReviewed] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState('')
@@ -214,12 +227,25 @@ export default function Checkout({
 
     if (!accountId) return connect()
 
+    if (delivery.name.trim().length < 2) return setError('Enter the name of the person receiving the order.')
+    if (!/^\+?[0-9 ()-]{6,24}$/.test(delivery.phone.trim())) return setError('Enter a phone number the seller can reach.')
+    if (delivery.address.trim().length < 5) return setError('Enter your delivery address.')
+    if (delivery.city.trim().length < 2) return setError('Enter your city.')
+    if (delivery.country.trim().length < 2) return setError('Enter your country.')
+
+    try {
+      localStorage.setItem(DELIVERY_KEY, JSON.stringify(delivery))
+    } catch {
+      // storage can be blocked
+    }
+
     setBusy('checkout')
 
     try {
       const result = await post<{ orders: Order[] }>('/orders/checkout', {
         buyerAccount: accountId,
         items: lines.map((line) => ({ productId: line.product.id, quantity: line.quantity })),
+        delivery,
       })
 
       onItemsPaid(lines.map((line) => line.product.id))
@@ -332,14 +358,43 @@ export default function Checkout({
                   <b>{near(String(subtotal))}</b>
                 </div>
                 <div className="c-row">
-                  <span>Network fee</span>
-                  <span className="c-sub">paid by you in your wallet</span>
+                  <span>Delivery</span>
+                  <span className="c-sub">included in item prices</span>
                 </div>
                 <div className="c-row total">
                   <span>Total</span>
                   <span>{near(String(subtotal))}</span>
                 </div>
                 {sellers > 1 && <div className="c-sub">Your cart has {sellers} sellers, so you will get {sellers} separate orders.</div>}
+              </div>
+
+              <div className="c-box" style={{ margin: 0 }}>
+                <b style={{ fontSize: 16 }}>Delivery address</b>
+                <div className="c-sub" style={{ margin: '2px 0 10px' }}>Only the seller of your order sees this.</div>
+                <div className="c-form" style={{ gap: 10 }}>
+                  {([
+                    ['name', 'Full name', 'Who will receive it', 'name'],
+                    ['phone', 'Phone number', '+234 801 234 5678', 'tel'],
+                    ['address', 'Address', 'House number, street, area', 'street-address'],
+                    ['city', 'City', 'Lagos', 'address-level2'],
+                    ['state', 'State or region', 'Lagos State', 'address-level1'],
+                    ['country', 'Country', 'Nigeria', 'country-name'],
+                    ['notes', 'Note for the seller (optional)', 'Landmark, call before arriving…', 'off'],
+                  ] as const).map(([field, label, placeholder, autoComplete]) => (
+                    <div className="c-field" key={field}>
+                      <label htmlFor={`d-${field}`}>{label}</label>
+                      <input
+                        id={`d-${field}`}
+                        value={delivery[field]}
+                        autoComplete={autoComplete}
+                        inputMode={field === 'phone' ? 'tel' : undefined}
+                        maxLength={field === 'address' || field === 'notes' ? 200 : 80}
+                        placeholder={placeholder}
+                        onChange={(event) => setDelivery((previous) => ({ ...previous, [field]: event.target.value }))}
+                      />
+                    </div>
+                  ))}
+                </div>
               </div>
 
               <div className="c-box c-escrow">
@@ -417,6 +472,8 @@ export default function Checkout({
         />
       )}
 
+      {tab === 'sales' && accountId && sales.length > 0 && <Dashboard sales={sales} />}
+
       {tab === 'sales' && (
         <OrderList
           orders={sales}
@@ -492,6 +549,8 @@ function OrderList({
             </span>
           </div>
 
+          <Timeline order={order} />
+
           {order.items.map((item) => (
             <div className="c-line" key={item.productId}>
               {item.image ? <img src={item.image} alt="" /> : <div className="c-noimg" />}
@@ -508,6 +567,18 @@ function OrderList({
             <span>{seller ? 'You receive' : 'Total'}</span>
             <span>{near(seller ? order.sellerReceivesNear : order.totalNear)}</span>
           </div>
+
+          {order.delivery && (
+            <div className="c-ship">
+              <b>{seller ? 'Ship to' : 'Delivering to'}</b>
+              <span>{order.delivery.name} · {order.delivery.phone}</span>
+              <span>
+                {order.delivery.address}, {order.delivery.city}
+                {order.delivery.state ? `, ${order.delivery.state}` : ''}, {order.delivery.country}
+              </span>
+              {order.delivery.notes && <span className="c-sub">Note: {order.delivery.notes}</span>}
+            </div>
+          )}
 
           {order.txHash && (
             <a className="c-sub" href={explorerTx(order.txHash)} target="_blank" rel="noreferrer">
