@@ -34,10 +34,18 @@ export default function Sell({
   const [category, setCategory] = useState('')
   const [condition, setCondition] = useState('New')
   const [price, setPrice] = useState('')
+  const [deliveryFee, setDeliveryFee] = useState('')
   const [quantity, setQuantity] = useState('1')
   const [location, setLocation] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+
+  // Money maths in whole micro-NEAR so decimals never drift (0.1 + 0.2 stays 0.3).
+  const micro = (value: string) => (/^\d*\.?\d{0,6}$/.test(value) && value !== '' && value !== '.' ? Math.round(Number(value) * 1e6) : 0)
+  const totalMicro = micro(price) + micro(deliveryFee)
+  const total = totalMicro > 0 ? String(totalMicro / 1e6) : ''
+  const youGet = Math.floor(totalMicro * 0.9) / 1e6
+  const decimalInput = (value: string) => value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1').replace(/^(\d*\.\d{6}).*$/, '$1')
 
   const mine = products.filter((product) => product.sellerAccount === accountId)
 
@@ -77,7 +85,8 @@ export default function Sell({
     form.append('description', description)
     form.append('category', category)
     form.append('condition', condition)
-    form.append('price', price)
+    form.append('price', total)
+    form.append('deliveryFee', deliveryFee)
     form.append('quantity', quantity)
     form.append('location', location)
     photos.forEach((photo, index) => form.append('images', photo.blob, `photo-${index}.jpg`))
@@ -101,6 +110,7 @@ export default function Sell({
       setName('')
       setDescription('')
       setPrice('')
+      setDeliveryFee('')
       setQuantity('1')
       setLocation('')
       onPublished()
@@ -180,15 +190,42 @@ export default function Sell({
           />
         </div>
 
+        <div className="c-warnbox" style={{ marginBottom: 0 }}>
+          <b>Add your delivery fee to the price.</b> Buyers pay one total and you ship the item to their address. Fill in the item price and your delivery cost below, and Cartel adds them together.
+        </div>
+
         <div className="c-two">
           <div className="c-field">
-            <label>Price (NEAR)</label>
-            <input inputMode="decimal" value={price} onChange={(event) => setPrice(event.target.value)} placeholder="2.5" />
+            <label htmlFor="item-price">Item price (NEAR)</label>
+            <input id="item-price" inputMode="decimal" value={price} onChange={(event) => setPrice(decimalInput(event.target.value))} placeholder="2" />
           </div>
           <div className="c-field">
-            <label>Quantity</label>
-            <input inputMode="numeric" value={quantity} onChange={(event) => setQuantity(event.target.value.replace(/\D/g, ''))} />
+            <label htmlFor="delivery-fee">Delivery fee (NEAR)</label>
+            <input id="delivery-fee" inputMode="decimal" value={deliveryFee} onChange={(event) => setDeliveryFee(decimalInput(event.target.value))} placeholder="0.5" />
           </div>
+        </div>
+
+        {total && (
+          <div className="c-box" style={{ margin: 0 }}>
+            <div className="c-row">
+              <span>Item</span>
+              <span>{near(String(micro(price) / 1e6))}</span>
+            </div>
+            <div className="c-row">
+              <span>Delivery</span>
+              <span>{near(String(micro(deliveryFee) / 1e6))}</span>
+            </div>
+            <div className="c-row total">
+              <span>Buyers pay</span>
+              <span>{near(total)}</span>
+            </div>
+            <div className="c-sub">You receive {near(String(youGet))} after the 10% Cartel fee.</div>
+          </div>
+        )}
+
+        <div className="c-field">
+          <label htmlFor="qty">Quantity</label>
+          <input id="qty" inputMode="numeric" value={quantity} onChange={(event) => setQuantity(event.target.value.replace(/\D/g, ''))} />
         </div>
 
         <div className="c-two">
