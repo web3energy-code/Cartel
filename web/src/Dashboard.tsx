@@ -21,7 +21,7 @@ export default function Dashboard({ sales }: { sales: Order[] }) {
     return { date, total: 0 }
   })
 
-  for (const order of paid) {
+  for (const order of paid.filter((item) => item.status !== 'disputed')) {
     if (!order.paidAt) continue
 
     const paidDay = new Date(order.paidAt)
