@@ -214,3 +214,31 @@ export async function sendFromEscrow(receiverId: string, amount: bigint): Promis
 
   return String(hash)
 }
+
+// What a finished transaction sent to `receiver` from `signer`: the summed Transfer deposits.
+export function depositFromTx(
+  tx: any,
+  signer: string,
+  receiver: string,
+): { ok: true; deposit: bigint } | { ok: false; reason: string } {
+  if (!tx?.transaction) return { ok: false, reason: 'Transaction details are not available yet.' }
+
+  if (hasFailure(tx.status) || (tx.receipts_outcome ?? []).some((r: any) => hasFailure(r?.outcome?.status))) {
+    return { ok: false, reason: 'That transaction failed on the network, so nothing was sent.' }
+  }
+
+  if (typeof tx.status !== 'object' || !tx.status || (!('SuccessValue' in tx.status) && !('SuccessReceiptId' in tx.status))) {
+    return { ok: false, reason: 'That transaction has not finished yet.' }
+  }
+
+  if (tx.transaction.signer_id !== signer) return { ok: false, reason: 'That transaction was not sent by this account.' }
+  if (tx.transaction.receiver_id !== receiver) return { ok: false, reason: 'That transaction was not sent to the escrow account.' }
+
+  let deposit = 0n
+
+  for (const action of tx.transaction.actions ?? []) {
+    if (action && typeof action === 'object' && 'Transfer' in action) deposit += BigInt(String(action.Transfer?.deposit ?? '0'))
+  }
+
+  return deposit > 0n ? { ok: true, deposit } : { ok: false, reason: 'That transaction did not send any NEAR.' }
+}
