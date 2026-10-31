@@ -671,11 +671,67 @@ app.post('/orders/:orderId/cancel', async (req: Request, res: Response) => {
 })
 
 // Admin decision on a disputed order. Protected by the ADMIN_TOKEN variable.
+// Sends a disputed order's money back to the buyer and puts the items back on sale.
+async function refundDisputedOrder(order: any) {
+  const { data: claimed } = await db()
+    .from(ORDERS)
+    .update({ status: 'refunding' })
+    .eq('id', order.id)
+    .eq('status', 'disputed')
+    .select('id')
+
+  if (!claimed || claimed.length === 0) throw new Error('This order is already being handled.')
+
+  try {
+    const refundTx = await chain.sendFromEscrow(order.buyer_account, BigInt(order.total_yocto))
+
+    await db().from(ORDERS).update({ status: 'refunded', refund_tx: refundTx, released_at: new Date().toISOString() }).eq('id', order.id)
+
+    for (const item of order.items) {
+      const { data: product } = await db().from(PRODUCTS).select('quantity').eq('id', item.product_id).maybeSingle()
+
+      if (product) {
+        await db()
+          .from(PRODUCTS)
+          .update({ quantity: Number(product.quantity) + item.quantity })
+          .eq('id', item.product_id)
+      }
+    }
+  } catch (error) {
+    await db().from(ORDERS).update({ status: 'disputed' }).eq('id', order.id)
+    throw error
+  }
+}
+
+function isAdmin(req: Request) {
+  const token = process.env.ADMIN_TOKEN
+
+  return !!token && req.get('x-admin-token') === token
+}
+
+// Admin: every order that is waiting for a decision, with the full id.
+app.get('/admin/disputes', async (req: Request, res: Response) => {
+  try {
+    if (!isAdmin(req)) return fail(res, 401, 'Not allowed.')
+
+    const { data } = await db().from(ORDERS).select('*').eq('status', 'disputed').limit(50)
+    const rows = data ?? []
+    const ids = rows.map((row: any) => row.id)
+    const { data: items } = ids.length ? await db().from(ITEMS).select('*').in('order_id', ids) : { data: [] as any[] }
+
+    res.set('Cache-Control', 'no-store')
+    res.json({
+      success: true,
+      disputes: rows.map((row: any) => publicOrder({ ...row, items: (items ?? []).filter((item: any) => item.order_id === row.id) })),
+    })
+  } catch (error) {
+    fail(res, 500, errorMessage(error, 'Could not load disputes.'))
+  }
+})
+
 app.post('/orders/:orderId/resolve', async (req: Request, res: Response) => {
   try {
-    const token = process.env.ADMIN_TOKEN
-
-    if (!token || req.get('x-admin-token') !== token) return fail(res, 401, 'Not allowed.')
+    if (!isAdmin(req)) return fail(res, 401, 'Not allowed.')
 
     const action = req.body?.action
     const order = await loadOrder(String(req.params.orderId))
@@ -686,34 +742,7 @@ app.post('/orders/:orderId/resolve', async (req: Request, res: Response) => {
       await db().from(ORDERS).update({ status: 'in_escrow' }).eq('id', order.id)
       await releaseOrder({ ...order, status: 'in_escrow' })
     } else if (action === 'refund') {
-      const { data: claimed } = await db()
-        .from(ORDERS)
-        .update({ status: 'refunding' })
-        .eq('id', order.id)
-        .eq('status', 'disputed')
-        .select('id')
-
-      if (!claimed || claimed.length === 0) return fail(res, 409, 'This order is already being handled.')
-
-      try {
-        const refundTx = await chain.sendFromEscrow(order.buyer_account, BigInt(order.total_yocto))
-
-        await db().from(ORDERS).update({ status: 'refunded', refund_tx: refundTx }).eq('id', order.id)
-
-        for (const item of order.items) {
-          const { data: product } = await db().from(PRODUCTS).select('quantity').eq('id', item.product_id).maybeSingle()
-
-          if (product) {
-            await db()
-              .from(PRODUCTS)
-              .update({ quantity: Number(product.quantity) + item.quantity })
-              .eq('id', item.product_id)
-          }
-        }
-      } catch (error) {
-        await db().from(ORDERS).update({ status: 'disputed' }).eq('id', order.id)
-        throw error
-      }
+      await refundDisputedOrder(order)
     } else {
       return fail(res, 400, 'action must be "release" or "refund".')
     }
@@ -721,6 +750,49 @@ app.post('/orders/:orderId/resolve', async (req: Request, res: Response) => {
     res.json({ success: true, order: publicOrder(await loadOrder(order.id)) })
   } catch (error) {
     fail(res, 500, errorMessage(error, 'Could not resolve the dispute.'))
+  }
+})
+
+// The seller agrees the buyer should get their money back.
+app.post('/orders/:orderId/agree-refund', async (req: Request, res: Response) => {
+  try {
+    const seller = String(req.body?.sellerAccount ?? '').trim()
+    const order = await loadOrder(String(req.params.orderId))
+
+    if (!order || order.seller_account !== seller) return fail(res, 404, 'Order not found.')
+    if (order.status !== 'disputed') return fail(res, 409, 'This order is not in dispute.')
+
+    await refundDisputedOrder(order)
+
+    res.json({ success: true, order: publicOrder(await loadOrder(order.id)) })
+  } catch (error) {
+    fail(res, 500, errorMessage(error, 'Could not send the refund.'))
+  }
+})
+
+// The buyer changes their mind: the order goes back to escrow with a fresh window.
+app.post('/orders/:orderId/withdraw-dispute', async (req: Request, res: Response) => {
+  try {
+    const buyer = String(req.body?.buyerAccount ?? '').trim()
+
+    const { data, error } = await db()
+      .from(ORDERS)
+      .update({
+        status: 'in_escrow',
+        dispute_reason: null,
+        release_after: new Date(Date.now() + ESCROW_HOURS * 3_600_000).toISOString(),
+      })
+      .eq('id', req.params.orderId)
+      .eq('buyer_account', buyer)
+      .eq('status', 'disputed')
+      .select('id')
+
+    if (error) throw new Error('Could not update the order.')
+    if (!data || data.length === 0) return fail(res, 409, 'This order is not in dispute.')
+
+    res.json({ success: true, order: publicOrder(await loadOrder(String(req.params.orderId))) })
+  } catch (error) {
+    fail(res, 500, errorMessage(error, 'Could not withdraw the dispute.'))
   }
 })
 
