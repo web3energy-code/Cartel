@@ -8,6 +8,7 @@ import {
   FEE_BPS,
   NEAR_NETWORK,
   checkPayment,
+  depositFromTx,
   escrowConfigured,
   feeAccount,
   formatNear,
@@ -770,6 +771,66 @@ app.get('/orders', async (req: Request, res: Response) => {
     })
   } catch (error) {
     fail(res, 500, errorMessage(error, 'Could not load your orders.'))
+  }
+})
+
+// Admin: send an unmatched payment back to the person who paid (for example a payment made twice).
+app.post('/admin/refund-payment', async (req: Request, res: Response) => {
+  let claimedHash = ''
+
+  try {
+    const token = process.env.ADMIN_TOKEN
+
+    if (!token || req.get('x-admin-token') !== token) return fail(res, 401, 'Not allowed.')
+
+    const txHash = String(req.body?.txHash ?? '').trim()
+    const payer = String(req.body?.payer ?? '').trim()
+
+    if (!/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(txHash)) return fail(res, 400, 'Enter a valid transaction hash.')
+    if (!isAccountId(payer)) return fail(res, 400, 'Enter the account that sent the payment.')
+    if (!escrowConfigured()) return fail(res, 503, 'Escrow is not configured on the server.')
+
+    const { data: used } = await db().from(ORDERS).select('id').eq('tx_hash', txHash).maybeSingle()
+
+    if (used) return fail(res, 409, 'That payment is attached to an order, so it is not an extra payment.')
+
+    const lookup = await chain.lookupTransaction(txHash, payer)
+
+    if (!lookup.found) return fail(res, 404, 'The network could not find that transaction. Check the hash and the account.')
+
+    const paid = depositFromTx(lookup.tx, payer, String(process.env.ESCROW_ACCOUNT_ID))
+
+    if (!paid.ok) return fail(res, 422, paid.reason)
+
+    // Claim the refund first, so two taps can never pay it back twice.
+    const { error: claimError } = await db()
+      .from('cartel_refunds')
+      .insert({ tx_hash: txHash, payer, amount_yocto: paid.deposit.toString(), state: 'sending' })
+
+    if (claimError) {
+      const { data: retry } = await db()
+        .from('cartel_refunds')
+        .update({ state: 'sending' })
+        .eq('tx_hash', txHash)
+        .eq('state', 'failed')
+        .select('tx_hash')
+
+      if (!retry || retry.length === 0) return fail(res, 409, 'That payment was already refunded or is being refunded.')
+    }
+
+    claimedHash = txHash
+
+    const refundTx = await chain.sendFromEscrow(payer, paid.deposit)
+
+    await db().from('cartel_refunds').update({ state: 'done', refund_tx: refundTx }).eq('tx_hash', txHash)
+
+    res.json({ success: true, refundTx, amountNear: formatNear(paid.deposit) })
+  } catch (error) {
+    console.error('Refund failed:', errorMessage(error, ''))
+
+    if (claimedHash) await db().from('cartel_refunds').update({ state: 'failed' }).eq('tx_hash', claimedHash)
+
+    fail(res, 500, 'The refund could not be sent. Try again in a moment.')
   }
 })
 
