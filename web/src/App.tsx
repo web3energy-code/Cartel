@@ -6,6 +6,7 @@ import { useWallet } from './wallet'
 import Sell from './Sell'
 import Checkout from './Checkout'
 import Inbox from './Inbox'
+import Admin from './Admin'
 import ProfilePage from './Profile'
 import Seller from './Seller'
 import { Avatar } from './ui'
@@ -50,6 +51,15 @@ export default function App() {
   const [condition, setCondition] = useState('Any')
   const [showFilters, setShowFilters] = useState(false)
   const [showAlerts, setShowAlerts] = useState(false)
+  const [adminMode, setAdminMode] = useState(window.location.hash === '#admin-tools')
+
+  useEffect(() => {
+    const onHash = () => setAdminMode(window.location.hash === '#admin-tools')
+
+    window.addEventListener('hashchange', onHash)
+
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
 
   useEffect(() => {
     try {
@@ -270,7 +280,9 @@ export default function App() {
       </header>
 
       <main className="c-main">
-        {page === 'market' && (
+        {adminMode && <Admin />}
+
+        {!adminMode && page === 'market' && (
           <>
             <section className="c-hero">
               <h1>Buy and sell on NEAR.</h1>
@@ -395,7 +407,7 @@ export default function App() {
           </>
         )}
 
-        {page === 'product' && (
+        {!adminMode && page === 'product' && (
           <>
             <button className="c-back" onClick={() => open('market')}>
               <ArrowLeft size={18} /> Back to market
@@ -424,7 +436,7 @@ export default function App() {
           </>
         )}
 
-        {page === 'seller' && (
+        {!adminMode && page === 'seller' && (
           <Seller
             account={sellerAccount}
             onBack={() => open(cameFrom === 'seller' ? 'market' : cameFrom)}
@@ -433,7 +445,7 @@ export default function App() {
           />
         )}
 
-        {page === 'inbox' && (
+        {!adminMode && page === 'inbox' && (
           <Inbox
             openWith={chatWith}
             productName={chatProduct}
@@ -446,14 +458,14 @@ export default function App() {
           />
         )}
 
-        {page === 'me' && (
+        {!adminMode && page === 'me' && (
           <ProfilePage
             onSaved={(saved) => setProfiles((previous) => ({ ...previous, [saved.account]: saved }))}
             onViewPublic={openSeller}
           />
         )}
 
-        {page === 'sell' && (
+        {!adminMode && page === 'sell' && (
           <Sell
             categories={config?.categories ?? []}
             onPublished={() => {
@@ -466,7 +478,7 @@ export default function App() {
           />
         )}
 
-        {page === 'cart' && (
+        {!adminMode && page === 'cart' && (
           <Checkout
             products={products}
             cart={cart}
