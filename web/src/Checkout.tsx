@@ -204,15 +204,43 @@ export default function Checkout({
   async function pay(order: Order) {
     setError('')
     setMessage('')
+
+    // A second payment would send your NEAR twice. Make the buyer stop and think first.
+    let attempted = false
+
+    try {
+      attempted = localStorage.getItem(`cartel-attempt-${order.id}`) === '1'
+    } catch {
+      // ignore
+    }
+
+    if (
+      attempted &&
+      !window.confirm('You already tried to pay this order. If your wallet shows the payment as sent, do NOT pay again: tap “I already paid” and paste the transaction hash. Pay again anyway?')
+    ) {
+      return
+    }
+
     setBusy(order.id)
 
     try {
       remember(order.id)
 
+      try {
+        localStorage.setItem(`cartel-attempt-${order.id}`, '1')
+      } catch {
+        // ignore
+      }
+
       const hash = await sendNear(order.escrowAccount, order.totalYocto)
 
       // A redirect wallet takes the browser away; we finish in the effect above on return.
-      if (!hash) return
+      if (!hash) {
+        setBusy('')
+        setMessage('If your wallet shows the payment as sent, tap “I already paid” on the order and paste the transaction hash.')
+
+        return
+      }
 
       await verify(order.id, hash)
     } catch (e) {
@@ -435,6 +463,10 @@ export default function Checkout({
                 </div>
               )}
 
+              {order.status === 'awaiting_payment' && (
+                <AlreadyPaid disabled={busy === order.id} onSubmit={(hash) => verify(order.id, hash)} />
+              )}
+
               {order.status === 'in_escrow' && (
                 <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
                   <div className="c-sub">
@@ -622,6 +654,38 @@ function ReviewBox({ onSubmit }: { onSubmit: (rating: number, comment: string) =
       {error && <div className="c-err">{error}</div>}
       <button className="c-btn signal full" disabled={busy} onClick={() => void submit()}>
         {busy ? 'Posting…' : 'Post review'}
+      </button>
+    </div>
+  )
+}
+
+// For a payment that was sent but not recognised: paste the transaction hash and check it again.
+function AlreadyPaid({ onSubmit, disabled }: { onSubmit: (hash: string) => Promise<void>; disabled: boolean }) {
+  const [open, setOpen] = useState(false)
+  const [hash, setHash] = useState('')
+
+  if (!open) {
+    return (
+      <button className="c-link" style={{ marginTop: 4 }} onClick={() => setOpen(true)}>
+        I already paid
+      </button>
+    )
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+      <div className="c-sub">Open your wallet or nearblocks, copy the transaction hash of your payment, and paste it here.</div>
+      <input
+        id="paid-hash"
+        className="c-textarea"
+        style={{ marginTop: 0 }}
+        value={hash}
+        onChange={(event) => setHash(event.target.value.trim())}
+        placeholder="Transaction hash"
+        autoCapitalize="none"
+      />
+      <button className="c-btn signal full" disabled={disabled || hash.length < 40} onClick={() => void onSubmit(hash)}>
+        Check my payment
       </button>
     </div>
   )
