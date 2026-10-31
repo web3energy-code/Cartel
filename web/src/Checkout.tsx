@@ -291,11 +291,11 @@ export default function Checkout({
     }
   }
 
-  async function act(order: Order, action: 'confirm' | 'ship' | 'cancel' | 'dispute') {
+  async function act(order: Order, action: 'confirm' | 'ship' | 'cancel' | 'dispute' | 'withdraw-dispute' | 'agree-refund') {
     setError('')
     setMessage('')
 
-    const body: Record<string, string> = action === 'ship' ? { sellerAccount: accountId } : { buyerAccount: accountId }
+    const body: Record<string, string> = action === 'ship' || action === 'agree-refund' ? { sellerAccount: accountId } : { buyerAccount: accountId }
 
     if (action === 'dispute') {
       const reason = window.prompt('What went wrong? (at least 10 characters)')
@@ -305,13 +305,14 @@ export default function Checkout({
     }
 
     if (action === 'confirm' && !window.confirm('Release the payment to the seller? Only do this if your order arrived.')) return
+    if (action === 'agree-refund' && !window.confirm('Send the buyer their money back? The sale will be cancelled.')) return
 
     setBusy(order.id)
 
     try {
       await post(`/orders/${order.id}/${action}`, body)
       setMessage(
-        { confirm: 'Payment released to the seller.', ship: 'Marked as shipped.', cancel: 'Order cancelled.', dispute: 'Dispute opened. Cartel will review it.' }[action],
+        { confirm: 'Payment released to the seller.', ship: 'Marked as shipped.', cancel: 'Order cancelled.', dispute: 'Dispute opened. Cartel will review it.', 'withdraw-dispute': 'Dispute withdrawn. The order is back in escrow.', 'agree-refund': 'The buyer was refunded.' }[action],
       )
       await refresh()
     } catch (e) {
@@ -498,7 +499,19 @@ export default function Checkout({
                   />
                 ))}
 
-              {order.status === 'disputed' && <div className="c-sub" style={{ marginTop: 10 }}>Reason: {order.disputeReason}</div>}
+              {order.status === 'disputed' && (
+                <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
+                  <div className="c-warnbox" style={{ marginBottom: 0 }}>
+                    <b>Your dispute is open.</b> Your payment stays safe in escrow while Cartel reviews it. You will be refunded or the seller paid, and you will get a notification. You can also withdraw the dispute if it was a mistake.
+                    <div className="c-sub" style={{ marginTop: 6 }}>Your reason: {order.disputeReason}</div>
+                  </div>
+                  <button className="c-btn ghost full" disabled={busy === order.id} onClick={() => void act(order, 'withdraw-dispute')}>
+                    Withdraw dispute
+                  </button>
+                </div>
+              )}
+
+              {order.status === 'refunded' && <div className="c-sub" style={{ marginTop: 10 }}>You were refunded {near(order.totalNear)}. Sent back to your wallet.</div>}
             </>
           )}
         />
@@ -524,7 +537,19 @@ export default function Checkout({
               {order.status === 'in_escrow' && order.shippedAt && (
                 <div className="c-sub" style={{ marginTop: 10 }}>Funds release in {countdown(order.releaseAfter)} or when the buyer confirms.</div>
               )}
-              {order.status === 'disputed' && <div className="c-sub" style={{ marginTop: 10 }}>Buyer says: {order.disputeReason}</div>}
+              {order.status === 'disputed' && (
+                <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
+                  <div className="c-warnbox" style={{ marginBottom: 0 }}>
+                    <b>The buyer opened a dispute.</b> The money stays in escrow. Cartel will review it, or you can agree to refund the buyer now.
+                    <div className="c-sub" style={{ marginTop: 6 }}>Buyer says: {order.disputeReason}</div>
+                  </div>
+                  <button className="c-btn ghost full" disabled={busy === order.id} onClick={() => void act(order, 'agree-refund')}>
+                    Agree to refund the buyer
+                  </button>
+                </div>
+              )}
+
+              {order.status === 'refunded' && <div className="c-sub" style={{ marginTop: 10 }}>This order was refunded to the buyer.</div>}
             </>
           )}
         />
