@@ -242,35 +242,3 @@ export function depositFromTx(
 
   return deposit > 0n ? { ok: true, deposit } : { ok: false, reason: 'That transaction did not send any NEAR.' }
 }
-
-// The buyer's most recent transfers to the escrow account, newest first. Used to confirm a
-// payment on its own when the wallet did not hand the app a transaction hash.
-// Returns an empty list when the explorer cannot be reached (the caller just tries again later).
-export async function findPayments(buyer: string, escrow: string): Promise<string[]> {
-  const base = NEAR_NETWORK === 'mainnet' ? 'https://api.nearblocks.io/v1' : 'https://api-testnet.nearblocks.io/v1'
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 10_000)
-
-  try {
-    const headers: Record<string, string> = { Accept: 'application/json' }
-
-    if (process.env.NEARBLOCKS_API_KEY) headers.Authorization = `Bearer ${process.env.NEARBLOCKS_API_KEY}`
-
-    const url = `${base}/account/${encodeURIComponent(escrow)}/txns?from=${encodeURIComponent(buyer)}&page=1&per_page=25&order=desc`
-    const response = await fetch(url, { headers, signal: controller.signal })
-
-    if (!response.ok) return []
-
-    const body: any = await response.json()
-    const rows: any[] = Array.isArray(body?.txns) ? body.txns : []
-
-    return rows
-      .filter((row) => row?.predecessor_account_id === buyer && row?.receiver_account_id === escrow)
-      .map((row) => String(row?.transaction_hash ?? ''))
-      .filter((hash) => /^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(hash))
-  } catch {
-    return []
-  } finally {
-    clearTimeout(timer)
-  }
-}
