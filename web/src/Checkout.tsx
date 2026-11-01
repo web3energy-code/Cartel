@@ -100,7 +100,7 @@ export default function Checkout({
   const [tab, setTab] = useState<Tab>('cart')
   const [orders, setOrders] = useState<Order[]>([])
   const [sales, setSales] = useState<Order[]>([])
-  const [armed, setArmed] = useState('')
+  const [sent, setSent] = useState<Record<string, boolean>>({})
   const [delivery, setDelivery] = useState<Delivery>(savedDelivery)
   const [reviewed, setReviewed] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(false)
@@ -186,29 +186,6 @@ export default function Checkout({
     [accountId, refresh, onStockChanged],
   )
 
-  // An order that was paid but never confirmed (the page closed, the wallet was slow): find the payment on its own.
-  const autoChecked = useRef('')
-
-  useEffect(() => {
-    if (!accountId || busy) return
-
-    const stuck = orders.find((order) => {
-      if (order.status !== 'awaiting_payment') return false
-
-      try {
-        return localStorage.getItem(`cartel-attempt-${order.id}`) === '1'
-      } catch {
-        return false
-      }
-    })
-
-    if (stuck && autoChecked.current !== stuck.id) {
-      autoChecked.current = stuck.id
-      void verify(stuck.id)
-    }
-    // eslint-disable-next-line
-  }, [orders, accountId])
-
   // Back from a wallet that left the page to approve the payment.
   useEffect(() => {
     if (!returnedTx || !accountId || handledReturn.current === returnedTx) return
@@ -225,27 +202,10 @@ export default function Checkout({
     // eslint-disable-next-line
   }, [returnedTx, accountId])
 
+  // Same as the first version that worked: tap Pay, the wallet opens straight away, then the server confirms.
   async function pay(order: Order) {
     setError('')
     setMessage('')
-
-    // Wallet pop-ups only open straight after a tap. So there must be no dialog and no waiting between the tap
-    // and the wallet: if this order may already be paid, the first tap only warns and the second tap pays.
-    let attempted = false
-
-    try {
-      attempted = localStorage.getItem(`cartel-attempt-${order.id}`) === '1'
-    } catch {
-      // ignore
-    }
-
-    if (attempted && armed !== order.id) {
-      setArmed(order.id)
-      setMessage('You already tried to pay this order. Tap “Check my payment” first. Only tap Pay again if your wallet did not send it.')
-
-      return
-    }
-
     setBusy(order.id)
 
     try {
@@ -253,14 +213,17 @@ export default function Checkout({
 
       const hash = await sendNear(order.escrowAccount, order.totalYocto)
 
-      try {
-        localStorage.setItem(`cartel-attempt-${order.id}`, '1')
-      } catch {
-        // ignore
+      setSent((previous) => ({ ...previous, [order.id]: true }))
+
+      // A redirect wallet takes the browser away; we finish in the effect below on return.
+      if (!hash) {
+        // No hash given: the server looks for the payment itself.
+        await verify(order.id)
+
+        return
       }
 
-      // Without a hash the server looks for the payment by itself.
-      await verify(order.id, hash || undefined)
+      await verify(order.id, hash)
     } catch (e) {
       setBusy('')
 
@@ -268,7 +231,7 @@ export default function Checkout({
 
       setError(
         /popup|pop-up/i.test(text)
-          ? 'Your browser blocked the wallet window. Allow pop-ups for this site (in Brave tap the lion icon, in Safari open Settings, Safari, and turn off Block Pop-ups), then tap Pay again. Nothing was charged.'
+          ? 'Your browser blocked the wallet window. Allow pop-ups for this site (in Brave tap the lion icon), then tap Pay again.'
           : text || 'The payment was not completed.',
       )
     }
@@ -481,11 +444,17 @@ export default function Checkout({
               {order.status === 'awaiting_payment' && (
                 <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
                   <button className="c-btn signal full" disabled={busy === order.id} onClick={() => void pay(order)}>
-                    {busy === order.id ? 'Working…' : `Pay ${near(order.totalNear)} with wallet`}
+                    {busy === order.id ? 'Working…' : sent[order.id] ? `Pay ${near(order.totalNear)} again` : `Pay ${near(order.totalNear)} with wallet`}
                   </button>
                   <button className="c-link" disabled={busy === order.id} onClick={() => void act(order, 'cancel')}>
                     Cancel order
                   </button>
+                </div>
+              )}
+
+              {order.status === 'awaiting_payment' && sent[order.id] && (
+                <div className="c-warnbox" style={{ marginTop: 8, marginBottom: 0 }}>
+                  Your wallet sent a payment for this order. Tap <b>Check my payment</b> below before paying again.
                 </div>
               )}
 
