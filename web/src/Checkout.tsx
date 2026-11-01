@@ -151,7 +151,7 @@ export default function Checkout({
 
   // Ask the server to confirm the payment. The network can need a few seconds to finish it.
   const verify = useCallback(
-    async (orderId: string, txHash?: string) => {
+    async (orderId: string, txHash: string) => {
       setBusy(orderId)
       setError('')
       setMessage('Confirming your payment on NEAR…')
@@ -160,7 +160,7 @@ export default function Checkout({
         for (let attempt = 0; attempt < 12; attempt++) {
           const result = await post<{ order?: Order; pending?: boolean }>(`/orders/${orderId}/verify`, {
             buyerAccount: accountId,
-            ...(txHash ? { txHash } : {}),
+            txHash,
           })
 
           if (result.order) {
@@ -175,7 +175,7 @@ export default function Checkout({
           await sleep(2500)
         }
 
-        setError('We have not seen your payment yet. If you did pay, wait a minute and tap “Check my payment”. Nothing is lost.')
+        setError('The network is slow to confirm. Wait a minute, then tap “Check my payment” on the order. Your payment is safe.')
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Could not confirm the payment.')
         setMessage('')
@@ -202,7 +202,7 @@ export default function Checkout({
     // eslint-disable-next-line
   }, [returnedTx, accountId])
 
-  // Same as the first version that worked: tap Pay, the wallet opens straight away, then the server confirms.
+  // The same steps as the first version that worked: tap Pay, the wallet opens, the payment is confirmed.
   async function pay(order: Order) {
     setError('')
     setMessage('')
@@ -215,10 +215,10 @@ export default function Checkout({
 
       setSent((previous) => ({ ...previous, [order.id]: true }))
 
-      // A redirect wallet takes the browser away; we finish in the effect below on return.
+      // A redirect wallet takes the browser away; we finish in the effect below when it comes back.
       if (!hash) {
-        // No hash given: the server looks for the payment itself.
-        await verify(order.id)
+        setBusy('')
+        setMessage('Your wallet did not give us the transaction code. Tap “Check my payment” on the order and paste it once.')
 
         return
       }
@@ -454,12 +454,12 @@ export default function Checkout({
 
               {order.status === 'awaiting_payment' && sent[order.id] && (
                 <div className="c-warnbox" style={{ marginTop: 8, marginBottom: 0 }}>
-                  Your wallet sent a payment for this order. Tap <b>Check my payment</b> below before paying again.
+                  Your wallet sent a payment for this order. Tap <b>Check my payment</b> below and paste the transaction hash before paying again.
                 </div>
               )}
 
               {order.status === 'awaiting_payment' && (
-                <AlreadyPaid disabled={busy === order.id} onCheck={() => verify(order.id)} onSubmit={(hash) => verify(order.id, hash)} />
+                <AlreadyPaid disabled={busy === order.id} onSubmit={(hash) => verify(order.id, hash)} />
               )}
 
               {order.status === 'in_escrow' && (
@@ -678,37 +678,34 @@ function ReviewBox({ onSubmit }: { onSubmit: (rating: number, comment: string) =
   )
 }
 
-// A payment that was sent but not recognised yet: ask the server to look for it again.
-function AlreadyPaid({ onCheck, onSubmit, disabled }: { onCheck: () => Promise<void>; onSubmit: (hash: string) => Promise<void>; disabled: boolean }) {
+// A payment that was sent but not recognised yet: paste its transaction hash and check again.
+function AlreadyPaid({ onSubmit, disabled }: { onSubmit: (hash: string) => Promise<void>; disabled: boolean }) {
   const [open, setOpen] = useState(false)
   const [hash, setHash] = useState('')
 
-  return (
-    <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
-      <button className="c-btn ghost full" disabled={disabled} onClick={() => void onCheck()}>
+  if (!open) {
+    return (
+      <button className="c-link" style={{ marginTop: 4 }} onClick={() => setOpen(true)}>
         Check my payment
       </button>
+    )
+  }
 
-      {!open ? (
-        <button className="c-link" onClick={() => setOpen(true)}>
-          Still not found? Paste the transaction hash
-        </button>
-      ) : (
-        <>
-          <input
-            id="paid-hash"
-            className="c-textarea"
-            style={{ marginTop: 0 }}
-            value={hash}
-            onChange={(event) => setHash(event.target.value.trim())}
-            placeholder="Transaction hash"
-            autoCapitalize="none"
-          />
-          <button className="c-btn signal full" disabled={disabled || hash.length < 40} onClick={() => void onSubmit(hash)}>
-            Check with this hash
-          </button>
-        </>
-      )}
+  return (
+    <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+      <div className="c-sub">Open your wallet, copy the transaction hash of your payment, and paste it here.</div>
+      <input
+        id="paid-hash"
+        className="c-textarea"
+        style={{ marginTop: 0 }}
+        value={hash}
+        onChange={(event) => setHash(event.target.value.trim())}
+        placeholder="Transaction hash"
+        autoCapitalize="none"
+      />
+      <button className="c-btn signal full" disabled={disabled || hash.length < 40} onClick={() => void onSubmit(hash)}>
+        Check my payment
+      </button>
     </div>
   )
 }
