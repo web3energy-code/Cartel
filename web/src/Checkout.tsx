@@ -100,6 +100,7 @@ export default function Checkout({
   const [tab, setTab] = useState<Tab>('cart')
   const [orders, setOrders] = useState<Order[]>([])
   const [sales, setSales] = useState<Order[]>([])
+  const [armed, setArmed] = useState('')
   const [delivery, setDelivery] = useState<Delivery>(savedDelivery)
   const [reviewed, setReviewed] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(false)
@@ -150,7 +151,7 @@ export default function Checkout({
 
   // Ask the server to confirm the payment. The network can need a few seconds to finish it.
   const verify = useCallback(
-    async (orderId: string, txHash: string) => {
+    async (orderId: string, txHash?: string) => {
       setBusy(orderId)
       setError('')
       setMessage('Confirming your payment on NEAR…')
@@ -159,7 +160,7 @@ export default function Checkout({
         for (let attempt = 0; attempt < 12; attempt++) {
           const result = await post<{ order?: Order; pending?: boolean }>(`/orders/${orderId}/verify`, {
             buyerAccount: accountId,
-            txHash,
+            ...(txHash ? { txHash } : {}),
           })
 
           if (result.order) {
@@ -174,7 +175,7 @@ export default function Checkout({
           await sleep(2500)
         }
 
-        setError('The network is slow to confirm. Open My orders in a minute and tap “I have paid” again.')
+        setError('We have not seen your payment yet. If you did pay, wait a minute and tap “Check my payment”. Nothing is lost.')
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Could not confirm the payment.')
         setMessage('')
@@ -184,6 +185,29 @@ export default function Checkout({
     },
     [accountId, refresh, onStockChanged],
   )
+
+  // An order that was paid but never confirmed (the page closed, the wallet was slow): find the payment on its own.
+  const autoChecked = useRef('')
+
+  useEffect(() => {
+    if (!accountId || busy) return
+
+    const stuck = orders.find((order) => {
+      if (order.status !== 'awaiting_payment') return false
+
+      try {
+        return localStorage.getItem(`cartel-attempt-${order.id}`) === '1'
+      } catch {
+        return false
+      }
+    })
+
+    if (stuck && autoChecked.current !== stuck.id) {
+      autoChecked.current = stuck.id
+      void verify(stuck.id)
+    }
+    // eslint-disable-next-line
+  }, [orders, accountId])
 
   // Back from a wallet that left the page to approve the payment.
   useEffect(() => {
@@ -205,7 +229,8 @@ export default function Checkout({
     setError('')
     setMessage('')
 
-    // A second payment would send your NEAR twice. Make the buyer stop and think first.
+    // Wallet pop-ups only open straight after a tap. So there must be no dialog and no waiting between the tap
+    // and the wallet: if this order may already be paid, the first tap only warns and the second tap pays.
     let attempted = false
 
     try {
@@ -214,10 +239,10 @@ export default function Checkout({
       // ignore
     }
 
-    if (
-      attempted &&
-      !window.confirm('You already tried to pay this order. If your wallet shows the payment as sent, do NOT pay again: tap “I already paid” and paste the transaction hash. Pay again anyway?')
-    ) {
+    if (attempted && armed !== order.id) {
+      setArmed(order.id)
+      setMessage('You already tried to pay this order. Tap “Check my payment” first. Only tap Pay again if your wallet did not send it.')
+
       return
     }
 
@@ -226,26 +251,26 @@ export default function Checkout({
     try {
       remember(order.id)
 
+      const hash = await sendNear(order.escrowAccount, order.totalYocto)
+
       try {
         localStorage.setItem(`cartel-attempt-${order.id}`, '1')
       } catch {
         // ignore
       }
 
-      const hash = await sendNear(order.escrowAccount, order.totalYocto)
-
-      // A redirect wallet takes the browser away; we finish in the effect above on return.
-      if (!hash) {
-        setBusy('')
-        setMessage('If your wallet shows the payment as sent, tap “I already paid” on the order and paste the transaction hash.')
-
-        return
-      }
-
-      await verify(order.id, hash)
+      // Without a hash the server looks for the payment by itself.
+      await verify(order.id, hash || undefined)
     } catch (e) {
       setBusy('')
-      setError(e instanceof Error ? e.message : 'The payment was not completed.')
+
+      const text = e instanceof Error ? e.message : ''
+
+      setError(
+        /popup|pop-up/i.test(text)
+          ? 'Your browser blocked the wallet window. Allow pop-ups for this site (in Brave tap the lion icon, in Safari open Settings, Safari, and turn off Block Pop-ups), then tap Pay again. Nothing was charged.'
+          : text || 'The payment was not completed.',
+      )
     }
   }
 
@@ -465,7 +490,7 @@ export default function Checkout({
               )}
 
               {order.status === 'awaiting_payment' && (
-                <AlreadyPaid disabled={busy === order.id} onSubmit={(hash) => verify(order.id, hash)} />
+                <AlreadyPaid disabled={busy === order.id} onCheck={() => verify(order.id)} onSubmit={(hash) => verify(order.id, hash)} />
               )}
 
               {order.status === 'in_escrow' && (
@@ -684,34 +709,37 @@ function ReviewBox({ onSubmit }: { onSubmit: (rating: number, comment: string) =
   )
 }
 
-// For a payment that was sent but not recognised: paste the transaction hash and check it again.
-function AlreadyPaid({ onSubmit, disabled }: { onSubmit: (hash: string) => Promise<void>; disabled: boolean }) {
+// A payment that was sent but not recognised yet: ask the server to look for it again.
+function AlreadyPaid({ onCheck, onSubmit, disabled }: { onCheck: () => Promise<void>; onSubmit: (hash: string) => Promise<void>; disabled: boolean }) {
   const [open, setOpen] = useState(false)
   const [hash, setHash] = useState('')
 
-  if (!open) {
-    return (
-      <button className="c-link" style={{ marginTop: 4 }} onClick={() => setOpen(true)}>
-        I already paid
-      </button>
-    )
-  }
-
   return (
     <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
-      <div className="c-sub">Open your wallet or nearblocks, copy the transaction hash of your payment, and paste it here.</div>
-      <input
-        id="paid-hash"
-        className="c-textarea"
-        style={{ marginTop: 0 }}
-        value={hash}
-        onChange={(event) => setHash(event.target.value.trim())}
-        placeholder="Transaction hash"
-        autoCapitalize="none"
-      />
-      <button className="c-btn signal full" disabled={disabled || hash.length < 40} onClick={() => void onSubmit(hash)}>
+      <button className="c-btn ghost full" disabled={disabled} onClick={() => void onCheck()}>
         Check my payment
       </button>
+
+      {!open ? (
+        <button className="c-link" onClick={() => setOpen(true)}>
+          Still not found? Paste the transaction hash
+        </button>
+      ) : (
+        <>
+          <input
+            id="paid-hash"
+            className="c-textarea"
+            style={{ marginTop: 0 }}
+            value={hash}
+            onChange={(event) => setHash(event.target.value.trim())}
+            placeholder="Transaction hash"
+            autoCapitalize="none"
+          />
+          <button className="c-btn signal full" disabled={disabled || hash.length < 40} onClick={() => void onSubmit(hash)}>
+            Check with this hash
+          </button>
+        </>
+      )}
     </div>
   )
 }
