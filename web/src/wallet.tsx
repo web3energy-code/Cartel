@@ -34,6 +34,7 @@ export function useWallet(): WalletValue {
 export function WalletProvider({ children }: { children: ReactNode }) {
   const selectorRef = useRef<WalletSelector | null>(null)
   const modalRef = useRef<WalletSelectorModal | null>(null)
+  const walletRef = useRef<any>(null)
   const [ready, setReady] = useState(false)
   const [accountId, setAccountId] = useState('')
 
@@ -58,6 +59,11 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           const active = accounts.find((account) => account.active) ?? accounts[0]
 
           setAccountId(active ? active.accountId : '')
+
+          // Resolve the wallet ahead of time. Browsers only allow a wallet pop-up straight after a tap,
+          // so nothing slow may happen between the Pay tap and the wallet opening.
+          if (active) selector.wallet().then((wallet) => (walletRef.current = wallet)).catch(() => undefined)
+          else walletRef.current = null
         }
 
         read()
@@ -106,7 +112,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
       if (!selector || !accountId) throw new Error('Connect your NEAR wallet first.')
 
-      const wallet = await selector.wallet()
+      const wallet = walletRef.current ?? (await selector.wallet())
 
       const outcome: any = await wallet.signAndSendTransaction({
         signerId: accountId,
