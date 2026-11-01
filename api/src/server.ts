@@ -11,6 +11,7 @@ import {
   depositFromTx,
   escrowConfigured,
   feeAccount,
+  findPayments,
   formatNear,
   isAccountId,
   lookupTransaction,
@@ -21,7 +22,7 @@ import {
 import { registerSocial } from './social.js'
 
 // The two things that talk to the NEAR network, kept in one place so tests can swap them.
-export const chain = { lookupTransaction, sendFromEscrow }
+export const chain = { lookupTransaction, sendFromEscrow, findPayments }
 
 const app = express()
 
@@ -442,70 +443,101 @@ app.post('/orders/checkout', async (req: Request, res: Response) => {
 
 // "I paid": the order only moves into escrow after the server reads the
 // transaction from the NEAR network and sees the money arrive.
+type Confirmation = { done: true } | { done: false; status: number; error: string; pending?: boolean }
+
+// Checks one transaction against an order and, if it is good, moves the order into escrow.
+async function confirmPayment(order: any, buyer: string, txHash: string): Promise<Confirmation> {
+  const { data: used } = await db().from(ORDERS).select('id').eq('tx_hash', txHash).maybeSingle()
+
+  if (used) return { done: false, status: 409, error: 'That transaction was already used for another order.' }
+
+  const lookup = await chain.lookupTransaction(txHash, buyer)
+
+  if (!lookup.found) {
+    if (lookup.unreachable) return { done: false, status: 502, error: 'Could not reach the NEAR network. Please try again.' }
+
+    return { done: false, status: 202, pending: true, error: 'The network has not finished that transaction yet. Trying again…' }
+  }
+
+  const verdict = checkPayment(lookup.tx, lookup.blockTimeMs, order)
+
+  if (!verdict.ok) return { done: false, status: 422, error: verdict.reason }
+
+  const now = new Date()
+
+  const { data: updated, error: updateError } = await db()
+    .from(ORDERS)
+    .update({
+      status: 'in_escrow',
+      tx_hash: txHash,
+      paid_at: now.toISOString(),
+      release_after: new Date(now.getTime() + ESCROW_HOURS * 3_600_000).toISOString(),
+    })
+    .eq('id', order.id)
+    .eq('status', 'awaiting_payment')
+    .select('id')
+
+  if (updateError || !updated || updated.length === 0) {
+    return { done: false, status: 409, error: 'That transaction was already used for another order.' }
+  }
+
+  for (const item of order.items) {
+    const { data: product } = await db().from(PRODUCTS).select('quantity').eq('id', item.product_id).maybeSingle()
+
+    if (product) {
+      await db()
+        .from(PRODUCTS)
+        .update({ quantity: Math.max(0, Number(product.quantity) - item.quantity) })
+        .eq('id', item.product_id)
+    }
+  }
+
+  return { done: true }
+}
+
+// Confirms a payment. The browser normally sends the transaction hash. If it does not have one,
+// the server looks for the buyer's payment to the escrow by itself.
 app.post('/orders/:orderId/verify', async (req: Request, res: Response) => {
   try {
     const buyer = String(req.body?.buyerAccount ?? '').trim()
     const txHash = String(req.body?.txHash ?? '').trim()
 
     if (!isAccountId(buyer)) return fail(res, 400, 'A valid buyer account is required.')
-    if (!/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(txHash)) return fail(res, 400, 'A valid transaction hash is required.')
+    if (txHash && !/^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(txHash)) return fail(res, 400, 'That transaction hash does not look right.')
 
     const order = await loadOrder(String(req.params.orderId))
 
     if (!order || order.buyer_account !== buyer) return fail(res, 404, 'Order not found.')
 
     if (order.status !== 'awaiting_payment') {
-      if (order.tx_hash === txHash) return void res.json({ success: true, order: publicOrder(order) })
+      if (!txHash || order.tx_hash === txHash) return void res.json({ success: true, order: publicOrder(order) })
 
       return fail(res, 409, 'This order has already been paid or closed.')
     }
 
-    const { data: used } = await db().from(ORDERS).select('id').eq('tx_hash', txHash).maybeSingle()
+    if (txHash) {
+      const result = await confirmPayment(order, buyer, txHash)
 
-    if (used) return fail(res, 409, 'That transaction was already used for another order.')
+      if (!result.done) {
+        if (result.pending) return void res.status(202).json({ success: false, pending: true, error: result.error })
 
-    const lookup = await chain.lookupTransaction(txHash, buyer)
+        return fail(res, result.status, result.error)
+      }
+    } else {
+      const candidates = await chain.findPayments(buyer, order.escrow_account)
+      let found = false
 
-    if (!lookup.found) {
-      if (lookup.unreachable) return fail(res, 502, 'Could not reach the NEAR network. Please try again.')
+      for (const candidate of candidates) {
+        const result = await confirmPayment(order, buyer, candidate)
 
-      return void res.status(202).json({
-        success: false,
-        pending: true,
-        error: 'The network has not finished that transaction yet. Trying again…',
-      })
-    }
+        if (result.done) {
+          found = true
+          break
+        }
+      }
 
-    const verdict = checkPayment(lookup.tx, lookup.blockTimeMs, order)
-
-    if (!verdict.ok) return fail(res, 422, verdict.reason)
-
-    const now = new Date()
-
-    const { data: updated, error: updateError } = await db()
-      .from(ORDERS)
-      .update({
-        status: 'in_escrow',
-        tx_hash: txHash,
-        paid_at: now.toISOString(),
-        release_after: new Date(now.getTime() + ESCROW_HOURS * 3_600_000).toISOString(),
-      })
-      .eq('id', order.id)
-      .eq('status', 'awaiting_payment')
-      .select('id')
-
-    if (updateError || !updated || updated.length === 0) {
-      return fail(res, 409, 'That transaction was already used for another order.')
-    }
-
-    for (const item of order.items) {
-      const { data: product } = await db().from(PRODUCTS).select('quantity').eq('id', item.product_id).maybeSingle()
-
-      if (product) {
-        await db()
-          .from(PRODUCTS)
-          .update({ quantity: Math.max(0, Number(product.quantity) - item.quantity) })
-          .eq('id', item.product_id)
+      if (!found) {
+        return void res.status(202).json({ success: false, pending: true, error: 'We have not seen your payment yet. Checking again…' })
       }
     }
 
